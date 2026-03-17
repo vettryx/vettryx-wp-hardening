@@ -3,7 +3,7 @@
  * Plugin Name: VETTRYX WP Hardening
  * Plugin URI:  https://github.com/vettryx/vettryx-wp-core
  * Description: Submódulo do VETTRYX WP Core para Defesa em Profundidade. Fecha vetores de ataque (REST API, XML-RPC), aplica anti-fingerprinting e bloqueia enumeração de usuários. Zero UI / By Default.
- * Version:     1.0.0
+ * Version:     1.0.1
  * Author:      VETTRYX Tech
  * Author URI:  https://vettryx.com.br
  * License:     Proprietária (Uso Comercial Exclusivo)
@@ -21,12 +21,24 @@ if ( ! defined( 'ABSPATH' ) ) {
  * ==============================================================================
  */
 
-// Remove tags de cabeçalho que identificam o WP (Generator, RSD, WLW)
+// Remove tags nativas do WP e links de descoberta da REST API
 add_action( 'init', 'vettryx_hardening_remove_fingerprinting' );
 function vettryx_hardening_remove_fingerprinting() {
 	remove_action( 'wp_head', 'wp_generator' );
 	remove_action( 'wp_head', 'rsd_link' );
 	remove_action( 'wp_head', 'wlwmanifest_link' );
+	
+	// Remove o link <link rel="https://api.w.org/"> do cabeçalho
+	remove_action( 'wp_head', 'rest_output_link_wp_head', 10 );
+	remove_action( 'template_redirect', 'rest_output_link_header', 11, 0 );
+}
+
+// Remove especificamente a tag <meta name="generator"> forçada pelo Elementor
+add_action( 'elementor/frontend/after_enqueue_styles', 'vettryx_hardening_remove_elementor_generator' );
+function vettryx_hardening_remove_elementor_generator() {
+	if ( class_exists( '\Elementor\Plugin' ) ) {
+		remove_action( 'wp_head', [ \Elementor\Plugin::$instance->frontend, 'add_generator_tag' ] );
+	}
 }
 
 // Remove a string de versão (?ver=X.X.X) dos arquivos CSS e JS
@@ -50,25 +62,20 @@ function vettryx_hardening_remove_asset_versions( $src ) {
 add_filter( 'xmlrpc_enabled', '__return_false' );
 
 // Bloqueia acesso não autenticado aos endpoints de usuários na REST API (/wp/v2/users)
-add_filter( 'rest_authentication_errors', 'vettryx_hardening_restrict_rest_users' );
-function vettryx_hardening_restrict_rest_users( $result ) {
-	if ( ! empty( $result ) ) {
-		return $result;
+add_filter( 'rest_pre_dispatch', 'vettryx_hardening_restrict_rest_users', 10, 3 );
+function vettryx_hardening_restrict_rest_users( $result, $server, $request ) {
+	// Pega a rota real que o WP tentará acessar
+	$route = $request->get_route();
+	
+	// Se for visitante anônimo e a rota começar com /wp/v2/users
+	if ( ! is_user_logged_in() && strpos( $route, '/wp/v2/users' ) === 0 ) {
+		return new WP_Error( 
+			'rest_unauthorized', 
+			'Acesso negado. Endpoint protegido pelo VETTRYX WP Core.', 
+			[ 'status' => 401 ] 
+		);
 	}
-
-	if ( ! is_user_logged_in() ) {
-		$rest_route  = isset( $GLOBALS['wp']->query_vars['rest_route'] ) ? $GLOBALS['wp']->query_vars['rest_route'] : '';
-		$request_uri = isset( $_SERVER['REQUEST_URI'] ) ? $_SERVER['REQUEST_URI'] : '';
-
-		if ( strpos( $rest_route, '/wp/v2/users' ) !== false || strpos( $request_uri, '/wp-json/wp/v2/users' ) !== false ) {
-			return new WP_Error( 
-				'rest_unauthorized', 
-				'Acesso negado. Endpoint protegido pelo VETTRYX WP Core.', 
-				[ 'status' => 401 ] 
-			);
-		}
-	}
-
+	
 	return $result;
 }
 
